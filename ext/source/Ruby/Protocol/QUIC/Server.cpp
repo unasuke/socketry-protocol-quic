@@ -58,6 +58,18 @@ namespace Ruby::Protocol::QUIC {
 			_ruby_streams.clear();
 		}
 	
+		// The idle timeout is a silent close (RFC 9000 §10.1): do not try to send CONNECTION_CLOSE, which would fail.
+		Status handle_error(int result, std::string_view reason = "") override
+		{
+			if (result == NGTCP2_ERR_IDLE_CLOSE) {
+				set_last_error(result, reason);
+				disconnect();
+				return Status::DRAINING;
+			}
+			
+			return ::Protocol::QUIC::Server::handle_error(result, reason);
+		}
+
 		void stream_close(::Protocol::QUIC::Stream * stream, std::int32_t flags, std::uint64_t error_code) override
 		{
 			auto stream_id = stream->stream_id();
