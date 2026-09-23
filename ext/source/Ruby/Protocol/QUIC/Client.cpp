@@ -9,6 +9,8 @@
 #include "Connection.hpp"
 #include "Callback.hpp"
 
+#include <ngtcp2/ngtcp2.h>
+
 #include <unordered_map>
 
 VALUE Ruby_Protocol_QUIC_Client = Qnil;
@@ -45,6 +47,17 @@ namespace Ruby::Protocol::QUIC {
 			_ruby_streams[stream_id] = stream;
 		
 			return Ruby_Protocol_QUIC_Stream_get(stream);
+		}
+	
+		// A connection closed by the peer (draining) or by the idle timeout must not try to send CONNECTION_CLOSE.
+		Status handle_error(int result, std::string_view reason = "") override
+		{
+			if (result == NGTCP2_ERR_DRAINING || result == NGTCP2_ERR_IDLE_CLOSE) {
+				set_last_error(result, reason);
+				return Status::DRAINING;
+			}
+			
+			return ::Protocol::QUIC::Client::handle_error(result, reason);
 		}
 	
 		void disconnect() override
