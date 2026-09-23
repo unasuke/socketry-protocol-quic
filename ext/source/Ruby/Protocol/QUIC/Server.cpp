@@ -32,9 +32,43 @@ namespace Ruby::Protocol::QUIC {
 		VALUE _remote_address;
 		std::unordered_map<::Protocol::QUIC::StreamID, VALUE> _ruby_streams;
 		bool _disconnected = false;
+		
+		// Wakes up `run` whenever the dispatcher has processed packets for this connection. `Scheduler::Semaphore` cannot be used for this: it calls `Queue#pop(timeout)` with a positional argument, which Ruby >= 3.2 treats as `non_block` and raises `ThreadError` instead of waiting.
+		VALUE _wakeup = Qnil;
+		
+		void wakeup()
+		{
+			if (RTEST(rb_funcall(_wakeup, rb_intern("empty?"), 0))) {
+				rb_funcall(_wakeup, rb_intern("push"), 1, Qtrue);
+			}
+		}
+		
+		// @returns false if the timeout expired.
+		bool wait_for_wakeup(const std::optional<::Protocol::QUIC::Timestamp> & timeout)
+		{
+			VALUE result;
+			
+			if (timeout) {
+				::Protocol::QUIC::Timestamp now;
+				double seconds = (*timeout - now).as_seconds();
+				if (seconds <= 0) return false;
+				
+				VALUE options = rb_hash_new();
+				rb_hash_aset(options, ID2SYM(rb_intern("timeout")), rb_float_new(seconds));
+				result = rb_funcallv_kw(_wakeup, rb_intern("pop"), 1, &options, RB_PASS_KEYWORDS);
+			} else {
+				result = rb_funcall(_wakeup, rb_intern("pop"), 0);
+			}
+			
+			return !NIL_P(result);
+		}
 	
 	public:
-		Server(VALUE self, VALUE dispatcher, VALUE configuration, VALUE tls_context, VALUE socket, VALUE remote_address, VALUE packet_header, VALUE ocid) : ::Protocol::QUIC::Server(*Ruby_Protocol_QUIC_Dispatcher_get(dispatcher), *Ruby_Protocol_QUIC_Configuration_get(configuration), *Ruby_Protocol_QUIC_TLS_ServerContext_get(tls_context), *Ruby_Protocol_QUIC_Socket_get(socket), *Ruby_Protocol_QUIC_Address_get(remote_address), *Ruby_Protocol_QUIC_PacketHeader_get(packet_header), nullptr), self(self), _dispatcher(dispatcher), _configuration(configuration), _tls_context(tls_context), _socket(socket), _remote_address(remote_address) {}
+		Server(VALUE self, VALUE dispatcher, VALUE configuration, VALUE tls_context, VALUE socket, VALUE remote_address, VALUE packet_header, VALUE ocid) : ::Protocol::QUIC::Server(*Ruby_Protocol_QUIC_Dispatcher_get(dispatcher), *Ruby_Protocol_QUIC_Configuration_get(configuration), *Ruby_Protocol_QUIC_TLS_ServerContext_get(tls_context), *Ruby_Protocol_QUIC_Socket_get(socket), *Ruby_Protocol_QUIC_Address_get(remote_address), *Ruby_Protocol_QUIC_PacketHeader_get(packet_header), nullptr), self(self), _dispatcher(dispatcher), _configuration(configuration), _tls_context(tls_context), _socket(socket), _remote_address(remote_address)
+		{
+			_wakeup = rb_funcall(rb_path2class("Thread::Queue"), rb_intern("new"), 0);
+		}
+		
 		virtual ~Server() {}
 	
 		::Protocol::QUIC::Stream * create_stream(::Protocol::QUIC::StreamID stream_id) override
@@ -63,6 +97,9 @@ namespace Ruby::Protocol::QUIC {
 			::Protocol::QUIC::Server::disconnect();
 			
 			_ruby_streams.clear();
+			
+			// Wake up `run` so that it can return:
+			wakeup();
 			
 			try {
 				protected_call(self, "disconnected");
@@ -100,6 +137,34 @@ namespace Ruby::Protocol::QUIC {
 			}
 		}
 	
+		// The dispatcher calls `send_packets` (which ends with `send_stream_data`) after every packet it hands to this connection.
+		Status send_stream_data() override
+		{
+			auto status = ::Protocol::QUIC::Server::send_stream_data();
+			wakeup();
+			return status;
+		}
+	
+		// Run the connection's timers (loss detection, idle timeout) and the closing and draining periods. Packets are received and answered by the dispatcher. Returns when the connection is gone.
+		void run()
+		{
+			while (!_disconnected) {
+				bool woken = wait_for_wakeup(expiry_timeout());
+				
+				if (_disconnected) break;
+				
+				if (!woken) {
+					handle_expiry();
+					if (_disconnected) break;
+				}
+				
+				if (is_closing() || is_draining()) {
+					drain();
+					break;
+				}
+			}
+		}
+	
 		void mark() {
 			rb_gc_mark_movable(self);
 			rb_gc_mark_movable(_dispatcher);
@@ -107,6 +172,7 @@ namespace Ruby::Protocol::QUIC {
 			rb_gc_mark_movable(_tls_context);
 			rb_gc_mark_movable(_socket);
 			rb_gc_mark_movable(_remote_address);
+			rb_gc_mark_movable(_wakeup);
 		
 			for (auto & [stream_id, ruby_stream] : _ruby_streams) {
 				rb_gc_mark_movable(ruby_stream);
@@ -120,6 +186,7 @@ namespace Ruby::Protocol::QUIC {
 			_tls_context = rb_gc_location(_tls_context);
 			_socket = rb_gc_location(_socket);
 			_remote_address = rb_gc_location(_remote_address);
+			_wakeup = rb_gc_location(_wakeup);
 		
 			for (auto & [stream_id, ruby_stream] : _ruby_streams) {
 				ruby_stream = rb_gc_location(ruby_stream);
@@ -208,6 +275,16 @@ static VALUE Ruby_Protocol_QUIC_Server_send_packets(VALUE self) {
 	});
 }
 
+// Drive the connection until it is gone. Blocks the calling fiber; other fibers keep running while it waits.
+static VALUE Ruby_Protocol_QUIC_Server_run(VALUE self) {
+	auto server = Ruby_Protocol_QUIC_Server_get_ruby(self);
+	
+	return Ruby::Protocol::QUIC::guard([&]{
+		server->run();
+		return Qnil;
+	});
+}
+
 static VALUE Ruby_Protocol_QUIC_Server_close(VALUE self, VALUE error_code) {
 	auto server = Ruby_Protocol_QUIC_Server_get_ruby(self);
 	std::uint64_t code = NUM2ULL(error_code);
@@ -230,6 +307,7 @@ void Init_Ruby_Protocol_QUIC_Server(VALUE Protocol_QUIC) {
 	rb_define_method(Ruby_Protocol_QUIC_Server, "initialize", Ruby_Protocol_QUIC_Server_initialize, 7);
 	
 	rb_define_method(Ruby_Protocol_QUIC_Server, "send_packets", Ruby_Protocol_QUIC_Server_send_packets, 0);
+	rb_define_method(Ruby_Protocol_QUIC_Server, "run", Ruby_Protocol_QUIC_Server_run, 0);
 	rb_define_method(Ruby_Protocol_QUIC_Server, "close", Ruby_Protocol_QUIC_Server_close, 1);
 	rb_define_method(Ruby_Protocol_QUIC_Server, "disconnected?", Ruby_Protocol_QUIC_Server_disconnected_p, 0);
 }
