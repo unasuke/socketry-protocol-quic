@@ -6,6 +6,7 @@
 #include "Socket.hpp"
 #include "Address.hpp"
 #include "Stream.hpp"
+#include "Callback.hpp"
 
 #include <unordered_map>
 
@@ -30,12 +31,16 @@ namespace Ruby::Protocol::QUIC {
 	
 		void handshake_completed() override
 		{
-			rb_funcall(self, rb_intern("handshake_completed"), 0);
+			protected_call(self, "handshake_completed");
 		}
 	
 		::Protocol::QUIC::Stream * create_stream(::Protocol::QUIC::StreamID stream_id) override
 		{
-			VALUE stream = rb_funcall(self, rb_intern("create_stream"), 1, RB_LL2NUM(stream_id));
+			VALUE argument = RB_LL2NUM(stream_id);
+			VALUE stream = protected_call(self, "create_stream", 1, &argument);
+			
+			if (NIL_P(stream)) throw std::runtime_error("create_stream returned nil");
+			
 			_ruby_streams[stream_id] = stream;
 		
 			return Ruby_Protocol_QUIC_Stream_get(stream);
@@ -137,17 +142,19 @@ static VALUE Ruby_Protocol_QUIC_Client_allocate(VALUE klass) {
 }
 
 static VALUE Ruby_Protocol_QUIC_Client_initialize(VALUE self, VALUE configuration, VALUE tls_context, VALUE socket, VALUE remote_address, VALUE chosen_version) {
-	::Protocol::QUIC::Client *client = new Ruby::Protocol::QUIC::Client(self, configuration, tls_context, socket, remote_address, chosen_version);
-	DATA_PTR(self) = client;
-	return self;
+	return Ruby::Protocol::QUIC::guard([&]{
+		DATA_PTR(self) = new Ruby::Protocol::QUIC::Client(self, configuration, tls_context, socket, remote_address, chosen_version);
+		return self;
+	});
 }
 
 static VALUE Ruby_Protocol_QUIC_Client_connect(VALUE self) {
 	::Protocol::QUIC::Client *client = Ruby_Protocol_QUIC_Client_get(self);
 	
-	client->connect();
-	
-	return Qnil;
+	return Ruby::Protocol::QUIC::guard([&]{
+		client->connect();
+		return Qnil;
+	});
 }
 
 void Init_Ruby_Protocol_QUIC_Client(VALUE Protocol_QUIC) {

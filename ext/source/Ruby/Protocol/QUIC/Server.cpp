@@ -10,6 +10,7 @@
 #include "PacketHeader.hpp"
 
 #include "Stream.hpp"
+#include "Callback.hpp"
 
 #include <unordered_map>
 
@@ -35,7 +36,11 @@ namespace Ruby::Protocol::QUIC {
 	
 		::Protocol::QUIC::Stream * create_stream(::Protocol::QUIC::StreamID stream_id) override
 		{
-			VALUE stream = rb_funcall(self, rb_intern("create_stream"), 1, RB_LL2NUM(stream_id));
+			VALUE argument = RB_LL2NUM(stream_id);
+			VALUE stream = protected_call(self, "create_stream", 1, &argument);
+			
+			if (NIL_P(stream)) throw std::runtime_error("create_stream returned nil");
+			
 			_ruby_streams[stream_id] = stream;
 		
 			return Ruby_Protocol_QUIC_Stream_get(stream);
@@ -143,19 +148,19 @@ static VALUE Ruby_Protocol_QUIC_Server_allocate(VALUE klass) {
 
 // Dispatcher & dispatcher, Configuration & configuration, TLS::ServerContext & tls_context, Socket & socket, const Address & remote_address, const ngtcp2_pkt_hd & packet_header, ngtcp2_cid *ocid = nullptr
 static VALUE Ruby_Protocol_QUIC_Server_initialize(VALUE self, VALUE dispatcher, VALUE configuration, VALUE tls_context, VALUE socket, VALUE remote_address, VALUE packet_header, VALUE ocid) {
-	::Protocol::QUIC::Server *server = new Ruby::Protocol::QUIC::Server(self, dispatcher, configuration, tls_context, socket, remote_address, packet_header, ocid);
-
-	DATA_PTR(self) = server;
-
-	return self;
+	return Ruby::Protocol::QUIC::guard([&]{
+		DATA_PTR(self) = new Ruby::Protocol::QUIC::Server(self, dispatcher, configuration, tls_context, socket, remote_address, packet_header, ocid);
+		return self;
+	});
 }
 
 static VALUE Ruby_Protocol_QUIC_Server_send_packets(VALUE self) {
 	::Protocol::QUIC::Server *server = Ruby_Protocol_QUIC_Server_get(self);
 	
-	server->send_packets();
-	
-	return Qnil;
+	return Ruby::Protocol::QUIC::guard([&]{
+		server->send_packets();
+		return Qnil;
+	});
 }
 
 void Init_Ruby_Protocol_QUIC_Server(VALUE Protocol_QUIC) {
