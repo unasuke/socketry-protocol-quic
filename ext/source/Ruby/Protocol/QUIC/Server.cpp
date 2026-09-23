@@ -14,6 +14,8 @@
 
 #include <unordered_map>
 
+#include <ngtcp2/ngtcp2.h>
+
 VALUE Ruby_Protocol_QUIC_Server = Qnil;
 
 namespace Ruby::Protocol::QUIC {
@@ -82,6 +84,20 @@ namespace Ruby::Protocol::QUIC {
 		void stream_reset(::Protocol::QUIC::Stream * stream, std::size_t final_size, std::uint64_t error_code) override
 		{
 			stream->reset(final_size, error_code);
+		}
+	
+		// Close the connection with an application error code (CONNECTION_CLOSE of type 0x1d).
+		void close_with_application_error(std::uint64_t error_code)
+		{
+			if (_disconnected) return;
+			
+			ngtcp2_ccerr_set_application_error(&_last_error, error_code, nullptr, 0);
+			
+			if (is_closing() || is_draining()) {
+				disconnect();
+			} else {
+				close();
+			}
 		}
 	
 		void mark() {
@@ -192,6 +208,16 @@ static VALUE Ruby_Protocol_QUIC_Server_send_packets(VALUE self) {
 	});
 }
 
+static VALUE Ruby_Protocol_QUIC_Server_close(VALUE self, VALUE error_code) {
+	auto server = Ruby_Protocol_QUIC_Server_get_ruby(self);
+	std::uint64_t code = NUM2ULL(error_code);
+	
+	return Ruby::Protocol::QUIC::guard([&]{
+		server->close_with_application_error(code);
+		return Qnil;
+	});
+}
+
 static VALUE Ruby_Protocol_QUIC_Server_disconnected_p(VALUE self) {
 	return Ruby_Protocol_QUIC_Server_get_ruby(self)->disconnected() ? Qtrue : Qfalse;
 }
@@ -204,5 +230,6 @@ void Init_Ruby_Protocol_QUIC_Server(VALUE Protocol_QUIC) {
 	rb_define_method(Ruby_Protocol_QUIC_Server, "initialize", Ruby_Protocol_QUIC_Server_initialize, 7);
 	
 	rb_define_method(Ruby_Protocol_QUIC_Server, "send_packets", Ruby_Protocol_QUIC_Server_send_packets, 0);
+	rb_define_method(Ruby_Protocol_QUIC_Server, "close", Ruby_Protocol_QUIC_Server_close, 1);
 	rb_define_method(Ruby_Protocol_QUIC_Server, "disconnected?", Ruby_Protocol_QUIC_Server_disconnected_p, 0);
 }
