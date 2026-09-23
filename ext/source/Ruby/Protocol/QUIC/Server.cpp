@@ -29,6 +29,7 @@ namespace Ruby::Protocol::QUIC {
 		VALUE _socket;
 		VALUE _remote_address;
 		std::unordered_map<::Protocol::QUIC::StreamID, VALUE> _ruby_streams;
+		bool _disconnected = false;
 	
 	public:
 		Server(VALUE self, VALUE dispatcher, VALUE configuration, VALUE tls_context, VALUE socket, VALUE remote_address, VALUE packet_header, VALUE ocid) : ::Protocol::QUIC::Server(*Ruby_Protocol_QUIC_Dispatcher_get(dispatcher), *Ruby_Protocol_QUIC_Configuration_get(configuration), *Ruby_Protocol_QUIC_TLS_ServerContext_get(tls_context), *Ruby_Protocol_QUIC_Socket_get(socket), *Ruby_Protocol_QUIC_Address_get(remote_address), *Ruby_Protocol_QUIC_PacketHeader_get(packet_header), nullptr), self(self), _dispatcher(dispatcher), _configuration(configuration), _tls_context(tls_context), _socket(socket), _remote_address(remote_address) {}
@@ -46,11 +47,29 @@ namespace Ruby::Protocol::QUIC {
 			return Ruby_Protocol_QUIC_Stream_get(stream);
 		}
 	
+		void handshake_completed() override
+		{
+			protected_call(self, "handshake_completed");
+		}
+	
+		// Invoked once when the connection is gone (closed by either side, idle timeout, or a fatal error): `Server#disconnected`.
 		void disconnect() override
 		{
+			if (_disconnected) return;
+			_disconnected = true;
+			
 			::Protocol::QUIC::Server::disconnect();
+			
 			_ruby_streams.clear();
+			
+			try {
+				protected_call(self, "disconnected");
+			} catch (...) {
+				// The connection is already gone; nothing else to unwind.
+			}
 		}
+	
+		bool disconnected() const noexcept {return _disconnected;}
 	
 		void stream_close(::Protocol::QUIC::Stream * stream, std::int32_t flags, std::uint64_t error_code) override
 		{
@@ -153,13 +172,28 @@ static VALUE Ruby_Protocol_QUIC_Server_initialize(VALUE self, VALUE dispatcher, 
 	});
 }
 
+static Ruby::Protocol::QUIC::Server * Ruby_Protocol_QUIC_Server_get_ruby(VALUE self)
+{
+	auto server = dynamic_cast<Ruby::Protocol::QUIC::Server *>(Ruby_Protocol_QUIC_Server_get(self));
+	
+	if (!server) rb_raise(rb_eRuntimeError, "server is not initialized");
+	
+	return server;
+}
+
 static VALUE Ruby_Protocol_QUIC_Server_send_packets(VALUE self) {
-	::Protocol::QUIC::Server *server = Ruby_Protocol_QUIC_Server_get(self);
+	auto server = Ruby_Protocol_QUIC_Server_get_ruby(self);
+	
+	if (server->disconnected()) return Qnil;
 	
 	return Ruby::Protocol::QUIC::guard([&]{
 		server->send_packets();
 		return Qnil;
 	});
+}
+
+static VALUE Ruby_Protocol_QUIC_Server_disconnected_p(VALUE self) {
+	return Ruby_Protocol_QUIC_Server_get_ruby(self)->disconnected() ? Qtrue : Qfalse;
 }
 
 void Init_Ruby_Protocol_QUIC_Server(VALUE Protocol_QUIC) {
@@ -170,4 +204,5 @@ void Init_Ruby_Protocol_QUIC_Server(VALUE Protocol_QUIC) {
 	rb_define_method(Ruby_Protocol_QUIC_Server, "initialize", Ruby_Protocol_QUIC_Server_initialize, 7);
 	
 	rb_define_method(Ruby_Protocol_QUIC_Server, "send_packets", Ruby_Protocol_QUIC_Server_send_packets, 0);
+	rb_define_method(Ruby_Protocol_QUIC_Server, "disconnected?", Ruby_Protocol_QUIC_Server_disconnected_p, 0);
 }
