@@ -9,6 +9,10 @@
 #include "Socket.hpp"
 #include "Address.hpp"
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <cerrno>
+
 VALUE Ruby_Protocol_QUIC_Socket = Qnil;
 
 static void Ruby_Protocol_QUIC_Socket_mark(void *data) {
@@ -111,6 +115,18 @@ static VALUE Ruby_Protocol_QUIC_Socket_close(VALUE self) {
 	return Qnil;
 }
 
+// Set IPV6_V6ONLY before binding, so that an IPv6 socket does not also accept IPv4-mapped addresses regardless of the net.ipv6.bindv6only sysctl.
+static VALUE Ruby_Protocol_QUIC_Socket_set_ipv6_only(VALUE self, VALUE value) {
+	auto socket = Ruby_Protocol_QUIC_Socket_get(self);
+	int flag = RTEST(value) ? 1 : 0;
+	
+	if (setsockopt(socket->descriptor(), IPPROTO_IPV6, IPV6_V6ONLY, &flag, sizeof(flag)) != 0) {
+		rb_sys_fail("setsockopt(IPV6_V6ONLY)");
+	}
+	
+	return value;
+}
+
 void Init_Ruby_Protocol_QUIC_Socket(VALUE Protocol_QUIC) {
 	Ruby_Protocol_QUIC_Socket = rb_define_class_under(Protocol_QUIC, "Socket", rb_cObject);
 	
@@ -123,4 +139,5 @@ void Init_Ruby_Protocol_QUIC_Socket(VALUE Protocol_QUIC) {
 	rb_define_method(Ruby_Protocol_QUIC_Socket, "bind", Ruby_Protocol_QUIC_Socket_bind, 1);
 	rb_define_method(Ruby_Protocol_QUIC_Socket, "connect", Ruby_Protocol_QUIC_Socket_connect, 1);
 	rb_define_method(Ruby_Protocol_QUIC_Socket, "close", Ruby_Protocol_QUIC_Socket_close, 0);
+	rb_define_method(Ruby_Protocol_QUIC_Socket, "ipv6_only=", Ruby_Protocol_QUIC_Socket_set_ipv6_only, 1);
 }
