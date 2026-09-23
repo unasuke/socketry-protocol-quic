@@ -77,6 +77,15 @@ namespace Ruby::Protocol::QUIC {
 		Server(VALUE self, VALUE dispatcher, VALUE configuration, VALUE tls_context, VALUE socket, VALUE remote_address, VALUE packet_header, VALUE ocid) : ::Protocol::QUIC::Server(*Ruby_Protocol_QUIC_Dispatcher_get(dispatcher), *Ruby_Protocol_QUIC_Configuration_get(configuration), *Ruby_Protocol_QUIC_TLS_ServerContext_get(tls_context), *Ruby_Protocol_QUIC_Socket_get(socket), *Ruby_Protocol_QUIC_Address_get(remote_address), *Ruby_Protocol_QUIC_PacketHeader_get(packet_header), nullptr), self(self), _dispatcher(dispatcher), _configuration(configuration), _tls_context(tls_context), _socket(socket), _remote_address(remote_address)
 		{
 			_wakeup = rb_funcall(rb_path2class("Thread::Queue"), rb_intern("new"), 0);
+			
+			// `Connection::setup` overwrites the transport parameters provided by `Configuration::setup`, so apply the Ruby configuration here. This is allowed until the handshake keys are installed, which happens only after the first packet is processed.
+			auto ruby_configuration = Ruby_Protocol_QUIC_Configuration_get_ruby(configuration);
+			auto params = *ngtcp2_conn_get_local_transport_params(_connection);
+			ruby_configuration->apply(params);
+			
+			if (auto result = ngtcp2_conn_set_local_transport_params(_connection, &params)) {
+				throw std::runtime_error(ngtcp2_strerror(result));
+			}
 		}
 		
 		virtual ~Server() {}
