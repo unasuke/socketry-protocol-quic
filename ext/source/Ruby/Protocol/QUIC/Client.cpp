@@ -60,11 +60,10 @@ namespace Ruby::Protocol::QUIC {
 			_ruby_streams.erase(stream_id);
 		}
 	
+		// Keep the stream registered after RESET_STREAM; ngtcp2 calls `stream_close` for it later.
 		void stream_reset(::Protocol::QUIC::Stream * stream, std::size_t final_size, std::uint64_t error_code) override
 		{
-			auto stream_id = stream->stream_id();
-			::Protocol::QUIC::Client::stream_reset(stream, final_size, error_code);
-			_ruby_streams.erase(stream_id);
+			stream->reset(final_size, error_code);
 		}
 	
 		void mark() {
