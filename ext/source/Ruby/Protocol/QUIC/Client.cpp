@@ -49,6 +49,13 @@ namespace Ruby::Protocol::QUIC {
 			return Ruby_Protocol_QUIC_Stream_get(stream);
 		}
 	
+		VALUE open_bidirectional_ruby_stream()
+		{
+			auto stream = open_bidirectional_stream();
+			
+			return _ruby_streams.at(stream->stream_id());
+		}
+	
 		// A connection closed by the peer (draining) or by the idle timeout must not try to send CONNECTION_CLOSE.
 		Status handle_error(int result, std::string_view reason = "") override
 		{
@@ -171,6 +178,57 @@ static VALUE Ruby_Protocol_QUIC_Client_connect(VALUE self) {
 	});
 }
 
+static Ruby::Protocol::QUIC::Client * Ruby_Protocol_QUIC_Client_get_ruby(VALUE self)
+{
+	auto client = dynamic_cast<Ruby::Protocol::QUIC::Client *>(Ruby_Protocol_QUIC_Client_get(self));
+	
+	if (!client) rb_raise(rb_eRuntimeError, "client is not initialized");
+	
+	return client;
+}
+
+static VALUE Ruby_Protocol_QUIC_Client_open_bidirectional_stream(VALUE self) {
+	auto client = Ruby_Protocol_QUIC_Client_get_ruby(self);
+	
+	return Ruby::Protocol::QUIC::guard([&]{
+		return client->open_bidirectional_ruby_stream();
+	});
+}
+
+static VALUE Ruby_Protocol_QUIC_Client_send_packets(VALUE self) {
+	auto client = Ruby_Protocol_QUIC_Client_get_ruby(self);
+	
+	return Ruby::Protocol::QUIC::guard([&]{
+		client->send_packets();
+		return Qnil;
+	});
+}
+
+// The CONNECTION_CLOSE received from the peer, as `[type, error_code]`. `type` is `:transport` or `:application`; `nil` if none was received.
+static VALUE Ruby_Protocol_QUIC_Client_remote_close_error(VALUE self) {
+	auto client = Ruby_Protocol_QUIC_Client_get_ruby(self);
+	auto error = ngtcp2_conn_get_ccerr(client->native_handle());
+	
+	// The connection enters the draining period only when it receives CONNECTION_CLOSE:
+	if (!error || !client->is_draining()) {
+		return Qnil;
+	}
+	
+	VALUE type;
+	switch (error->type) {
+		case NGTCP2_CCERR_TYPE_APPLICATION:
+			type = ID2SYM(rb_intern("application"));
+			break;
+		case NGTCP2_CCERR_TYPE_IDLE_CLOSE:
+			type = ID2SYM(rb_intern("idle_close"));
+			break;
+		default:
+			type = ID2SYM(rb_intern("transport"));
+	}
+	
+	return rb_ary_new_from_args(2, type, ULL2NUM(error->error_code));
+}
+
 void Init_Ruby_Protocol_QUIC_Client(VALUE Protocol_QUIC) {
 	Ruby_Protocol_QUIC_Client =
 			rb_define_class_under(Protocol_QUIC, "Client", rb_cObject);
@@ -179,4 +237,7 @@ void Init_Ruby_Protocol_QUIC_Client(VALUE Protocol_QUIC) {
 	rb_define_method(Ruby_Protocol_QUIC_Client, "initialize", Ruby_Protocol_QUIC_Client_initialize, 5);
 	
 	rb_define_method(Ruby_Protocol_QUIC_Client, "connect", Ruby_Protocol_QUIC_Client_connect, 0);
+	rb_define_method(Ruby_Protocol_QUIC_Client, "open_bidirectional_stream", Ruby_Protocol_QUIC_Client_open_bidirectional_stream, 0);
+	rb_define_method(Ruby_Protocol_QUIC_Client, "send_packets", Ruby_Protocol_QUIC_Client_send_packets, 0);
+	rb_define_method(Ruby_Protocol_QUIC_Client, "remote_close_error", Ruby_Protocol_QUIC_Client_remote_close_error, 0);
 }
