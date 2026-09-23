@@ -13,6 +13,7 @@
 #include "Callback.hpp"
 
 #include <unordered_map>
+#include <vector>
 
 #include <ngtcp2/ngtcp2.h>
 
@@ -32,6 +33,9 @@ namespace Ruby::Protocol::QUIC {
 		VALUE _remote_address;
 		std::unordered_map<::Protocol::QUIC::StreamID, VALUE> _ruby_streams;
 		bool _disconnected = false;
+		
+		// Connection IDs issued after the connection was created (NEW_CONNECTION_ID). The base dispatcher only registers the IDs that exist when the connection is created, so packets sent to a later ID (quic-go switches to one during the handshake) would otherwise be treated as a new connection.
+		std::vector<ngtcp2_cid> _issued_cids;
 		
 		// Wakes up `run` whenever the dispatcher has processed packets for this connection. `Scheduler::Semaphore` cannot be used for this: it calls `Queue#pop(timeout)` with a positional argument, which Ruby >= 3.2 treats as `non_block` and raises `ThreadError` instead of waiting.
 		VALUE _wakeup = Qnil;
@@ -96,6 +100,12 @@ namespace Ruby::Protocol::QUIC {
 			
 			::Protocol::QUIC::Server::disconnect();
 			
+			// Retired IDs are no longer returned by `scids()`, so remove every ID this connection issued; a stale entry would point at a freed server.
+			for (auto & cid : _issued_cids) {
+				::Protocol::QUIC::Server::_dispatcher.disassociate(&cid);
+			}
+			_issued_cids.clear();
+			
 			_ruby_streams.clear();
 			
 			// Wake up `run` so that it can return:
@@ -109,6 +119,14 @@ namespace Ruby::Protocol::QUIC {
 		}
 	
 		bool disconnected() const noexcept {return _disconnected;}
+	
+		void generate_connection_id(ngtcp2_cid *cid, std::size_t length, uint8_t *token) override
+		{
+			::Protocol::QUIC::Server::generate_connection_id(cid, length, token);
+			
+			::Protocol::QUIC::Server::_dispatcher.associate(cid, this);
+			_issued_cids.push_back(*cid);
+		}
 	
 		// The idle timeout is a silent close (RFC 9000 §10.1): do not try to send CONNECTION_CLOSE, which would fail.
 		Status handle_error(int result, std::string_view reason = "") override
