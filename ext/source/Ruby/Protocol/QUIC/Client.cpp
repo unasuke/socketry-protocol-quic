@@ -6,6 +6,7 @@
 #include "Socket.hpp"
 #include "Address.hpp"
 #include "Stream.hpp"
+#include "Connection.hpp"
 #include "Callback.hpp"
 
 #include <unordered_map>
@@ -126,6 +127,7 @@ static const rb_data_type_t Ruby_Protocol_QUIC_Client_type = {
 		.dsize = Ruby_Protocol_QUIC_Client_size,
 		.dcompact = Ruby_Protocol_QUIC_Client_compact,
 	},
+	.parent = &Ruby_Protocol_QUIC_Connection_type,
 	.data = NULL,
 	.flags = RUBY_TYPED_FREE_IMMEDIATELY,
 };
