@@ -67,6 +67,12 @@ namespace Ruby::Protocol::QUIC {
 			return !NIL_P(result);
 		}
 	
+		static bool remote_bidirectional(::Protocol::QUIC::StreamID stream_id)
+		{
+			// Client-initiated bidirectional streams have the two least significant bits 0b00 (RFC 9000 §2.1).
+			return (stream_id & 0x3) == 0;
+		}
+	
 	public:
 		Server(VALUE self, VALUE dispatcher, VALUE configuration, VALUE tls_context, VALUE socket, VALUE remote_address, VALUE packet_header, VALUE ocid) : ::Protocol::QUIC::Server(*Ruby_Protocol_QUIC_Dispatcher_get(dispatcher), *Ruby_Protocol_QUIC_Configuration_get(configuration), *Ruby_Protocol_QUIC_TLS_ServerContext_get(tls_context), *Ruby_Protocol_QUIC_Socket_get(socket), *Ruby_Protocol_QUIC_Address_get(remote_address), *Ruby_Protocol_QUIC_PacketHeader_get(packet_header), nullptr), self(self), _dispatcher(dispatcher), _configuration(configuration), _tls_context(tls_context), _socket(socket), _remote_address(remote_address)
 		{
@@ -145,6 +151,11 @@ namespace Ruby::Protocol::QUIC {
 			auto stream_id = stream->stream_id();
 			::Protocol::QUIC::Server::stream_close(stream, flags, error_code);
 			_ruby_streams.erase(stream_id);
+			
+			// ngtcp2 does not raise the stream limit by itself; allow the client to open a new stream for each one that is closed.
+			if (remote_bidirectional(stream_id)) {
+				ngtcp2_conn_extend_max_streams_bidi(_connection, 1);
+			}
 		}
 	
 		// Unlike the base class, keep the stream registered after RESET_STREAM: ngtcp2 still calls `stream_close` for it later, and the base class would fail to find it then.
