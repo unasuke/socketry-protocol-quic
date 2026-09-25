@@ -17,7 +17,7 @@ VALUE Ruby_Protocol_QUIC_Client = Qnil;
 
 namespace Ruby::Protocol::QUIC {
 
-	class Client : public ::Protocol::QUIC::Client {
+	class Client : public ::Protocol::QUIC::Client, public StreamOwner {
 	public:
 		VALUE self;
 	
@@ -130,7 +130,7 @@ static void Ruby_Protocol_QUIC_Client_compact(void *data)
 static void Ruby_Protocol_QUIC_Client_free(void *data)
 {
 	if (data) {
-		delete reinterpret_cast<::Protocol::QUIC::Client *>(data);
+		Ruby::Protocol::QUIC::release_connection(reinterpret_cast<Ruby::Protocol::QUIC::Client *>(data));
 	}
 }
 

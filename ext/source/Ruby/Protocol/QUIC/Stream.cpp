@@ -23,9 +23,17 @@ namespace Ruby::Protocol::QUIC {
 	private:
 		VALUE _connection;
 	public:
-		Stream(VALUE self, VALUE connection, VALUE stream_id) : ::Protocol::QUIC::BufferedStream(*Ruby_Protocol_QUIC_Connection_get(connection), RB_NUM2LL(stream_id)), self(self), _connection(connection) {}
+		Stream(VALUE self, VALUE connection, VALUE stream_id) : ::Protocol::QUIC::BufferedStream(*Ruby_Protocol_QUIC_Connection_get(connection), RB_NUM2LL(stream_id)), self(self), _connection(connection)
+		{
+			if (auto owner = this->owner()) owner->live_streams += 1;
+		}
 	
 		virtual ~Stream() {}
+	
+		StreamOwner * owner()
+		{
+			return dynamic_cast<StreamOwner *>(&connection());
+		}
 	
 		// Hand received data to Ruby (`Stream#received(data, fin)`) instead of buffering it here. The data is consumed immediately, so the flow control windows are extended by the same amount; otherwise a long lived connection would stall once the initial windows are used up.
 		void receive_data(std::size_t offset, const void * data, std::size_t size, std::uint32_t flags) override
@@ -113,7 +121,21 @@ static void Ruby_Protocol_QUIC_Stream_compact(void *data) {
 
 static void Ruby_Protocol_QUIC_Stream_free(void *data) {
 	if (data) {
-		delete reinterpret_cast<Ruby::Protocol::QUIC::Stream *>(data);
+		auto stream = reinterpret_cast<Ruby::Protocol::QUIC::Stream *>(data);
+		auto owner = stream->owner();
+		auto & connection = stream->connection();
+		
+		// ~Stream still needs the connection, so delete the stream first:
+		delete stream;
+		
+		if (owner) {
+			owner->live_streams -= 1;
+			
+			// The connection's Ruby object was freed first; this was its last stream:
+			if (owner->released && owner->live_streams == 0) {
+				delete &connection;
+			}
+		}
 	}
 }
 
