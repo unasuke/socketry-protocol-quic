@@ -133,7 +133,7 @@ static void Ruby_Protocol_QUIC_Stream_free(void *data) {
 			
 			// The connection's Ruby object was freed first; this was its last stream:
 			if (owner->released && owner->live_streams == 0) {
-				delete &connection;
+				Ruby::Protocol::QUIC::destroy_connection(owner);
 			}
 		}
 	}

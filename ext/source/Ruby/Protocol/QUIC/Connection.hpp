@@ -11,8 +11,10 @@
 #include <ruby.h>
 
 #include <Protocol/QUIC/Connection.hpp>
+#include <Protocol/QUIC/TLS/Context.hpp>
 
 #include <cstddef>
+#include <unordered_map>
 
 namespace Ruby::Protocol::QUIC {
 
@@ -22,18 +24,77 @@ namespace Ruby::Protocol::QUIC {
 	struct StreamOwner {
 		std::size_t live_streams = 0;
 		bool released = false;
+		
+		// The context of this connection's TLS session; see retain_context.
+		::Protocol::QUIC::TLS::Context * tls_context = nullptr;
 
 		virtual ~StreamOwner() = default;
 	};
 
+	// A TLS session refers to its context (~Session calls ptls_free, which uses the context). The context's Ruby
+	// object may be freed before a connection that uses it, in the same GC cycle or earlier when the connection's
+	// deletion is deferred, so contexts count the connections that use them and are deleted after the last one.
+	struct ContextUsers {
+		std::size_t count = 0;
+		bool released = false;
+	};
+
+	inline std::unordered_map<const ::Protocol::QUIC::TLS::Context *, ContextUsers> & context_users()
+	{
+		static std::unordered_map<const ::Protocol::QUIC::TLS::Context *, ContextUsers> users;
+		return users;
+	}
+
+	inline void retain_context(::Protocol::QUIC::TLS::Context * context)
+	{
+		context_users()[context].count += 1;
+	}
+
+	// A connection that used the context is gone.
+	inline void release_context_user(::Protocol::QUIC::TLS::Context * context)
+	{
+		auto & users = context_users();
+		auto iterator = users.find(context);
+		if (iterator == users.end()) return;
+		
+		if (--iterator->second.count > 0) return;
+		
+		bool released = iterator->second.released;
+		users.erase(iterator);
+		
+		if (released) delete context;
+	}
+
+	// The context's Ruby object is freed: delete it now, or after the last connection that uses it.
+	inline void release_context(::Protocol::QUIC::TLS::Context * context)
+	{
+		auto & users = context_users();
+		auto iterator = users.find(context);
+		
+		if (iterator != users.end() && iterator->second.count > 0) {
+			iterator->second.released = true;
+		} else {
+			if (iterator != users.end()) users.erase(iterator);
+			delete context;
+		}
+	}
+
+	// Delete a connection, then let go of its TLS context.
+	inline void destroy_connection(StreamOwner * connection)
+	{
+		auto context = connection->tls_context;
+		delete connection;
+		
+		if (context) release_context_user(context);
+	}
+
 	// Delete a connection from its GC free function, or defer it while streams still refer to it.
-	template <typename ConnectionType>
-	void release_connection(ConnectionType * connection)
+	inline void release_connection(StreamOwner * connection)
 	{
 		if (connection->live_streams > 0) {
 			connection->released = true;
 		} else {
-			delete connection;
+			destroy_connection(connection);
 		}
 	}
 

@@ -29,7 +29,12 @@ namespace Ruby::Protocol::QUIC {
 		std::unordered_map<::Protocol::QUIC::StreamID, VALUE> _ruby_streams;
 	
 	public:
-		Client(VALUE self, VALUE configuration, VALUE tls_context, VALUE socket, VALUE remote_address, VALUE chosen_version) : ::Protocol::QUIC::Client(*Ruby_Protocol_QUIC_Configuration_get(configuration), *Ruby_Protocol_QUIC_TLS_ClientContext_get(tls_context), *Ruby_Protocol_QUIC_Socket_get(socket), *Ruby_Protocol_QUIC_Address_get(remote_address), RB_NUM2UINT(chosen_version)), self(self), _configuration(configuration), _tls_context(tls_context), _socket(socket), _remote_address(remote_address) {}
+		Client(VALUE self, VALUE configuration, VALUE tls_context, VALUE socket, VALUE remote_address, VALUE chosen_version) : ::Protocol::QUIC::Client(*Ruby_Protocol_QUIC_Configuration_get(configuration), *Ruby_Protocol_QUIC_TLS_ClientContext_get(tls_context), *Ruby_Protocol_QUIC_Socket_get(socket), *Ruby_Protocol_QUIC_Address_get(remote_address), RB_NUM2UINT(chosen_version)), self(self), _configuration(configuration), _tls_context(tls_context), _socket(socket), _remote_address(remote_address)
+		{
+			StreamOwner::tls_context = Ruby_Protocol_QUIC_TLS_ClientContext_get(tls_context);
+			retain_context(StreamOwner::tls_context);
+		}
+		
 		virtual ~Client() {}
 	
 		void handshake_completed() override

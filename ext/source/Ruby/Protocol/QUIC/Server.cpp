@@ -86,6 +86,10 @@ namespace Ruby::Protocol::QUIC {
 			if (auto result = ngtcp2_conn_set_local_transport_params(_connection, &params)) {
 				throw std::runtime_error(ngtcp2_strerror(result));
 			}
+			
+			// Last, so that a constructor that throws never leaves the context counted:
+			StreamOwner::tls_context = Ruby_Protocol_QUIC_TLS_ServerContext_get(tls_context);
+			retain_context(StreamOwner::tls_context);
 		}
 		
 		virtual ~Server() {}
