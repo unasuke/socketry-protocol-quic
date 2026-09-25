@@ -57,11 +57,22 @@ namespace Ruby::Protocol::QUIC {
 		}
 	
 		// A connection closed by the peer (draining) or by the idle timeout must not try to send CONNECTION_CLOSE.
+		// Thrown to leave Client::connect after an idle timeout; see handle_error.
+		struct IdleClosed {};
+	
 		Status handle_error(int result, std::string_view reason = "") override
 		{
-			if (result == NGTCP2_ERR_DRAINING || result == NGTCP2_ERR_IDLE_CLOSE) {
+			if (result == NGTCP2_ERR_DRAINING) {
 				set_last_error(result, reason);
 				return Status::DRAINING;
+			}
+			
+			// After an idle timeout the connection is neither closing nor draining, so Client::connect would keep
+			// retrying with an expired timer and never return. It is a silent close (RFC 9000 §10.1): leave the loop.
+			// Only C++ frames are unwound: handle_expiry is not called from within ngtcp2.
+			if (result == NGTCP2_ERR_IDLE_CLOSE) {
+				set_last_error(result, reason);
+				throw IdleClosed{};
 			}
 			
 			return ::Protocol::QUIC::Client::handle_error(result, reason);
@@ -170,10 +181,14 @@ static VALUE Ruby_Protocol_QUIC_Client_initialize(VALUE self, VALUE configuratio
 }
 
 static VALUE Ruby_Protocol_QUIC_Client_connect(VALUE self) {
-	::Protocol::QUIC::Client *client = Ruby_Protocol_QUIC_Client_get(self);
+	auto client = dynamic_cast<Ruby::Protocol::QUIC::Client *>(Ruby_Protocol_QUIC_Client_get(self));
 	
 	return Ruby::Protocol::QUIC::guard([&]{
-		client->connect();
+		try {
+			client->connect();
+		} catch (Ruby::Protocol::QUIC::Client::IdleClosed &) {
+			client->disconnect();
+		}
 		return Qnil;
 	});
 }
