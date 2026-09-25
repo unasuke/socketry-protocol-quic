@@ -37,7 +37,13 @@ namespace Ruby::Protocol::QUIC {
 		}
 	
 	public:
-		Server(VALUE self, VALUE dispatcher, VALUE configuration, VALUE tls_context, VALUE socket, VALUE remote_address, VALUE packet_header, VALUE ocid) : ::Protocol::QUIC::Server(*Ruby_Protocol_QUIC_Dispatcher_get(dispatcher), *Ruby_Protocol_QUIC_Configuration_get(configuration), *Ruby_Protocol_QUIC_TLS_ServerContext_get(tls_context), *Ruby_Protocol_QUIC_Socket_get(socket), *Ruby_Protocol_QUIC_Address_get(remote_address), *Ruby_Protocol_QUIC_PacketHeader_get(packet_header), nullptr), self(self), _dispatcher(dispatcher), _configuration(configuration), _tls_context(tls_context), _socket(socket), _remote_address(remote_address) {}
+		Server(VALUE self, VALUE dispatcher, VALUE configuration, VALUE tls_context, VALUE socket, VALUE remote_address, VALUE packet_header, VALUE ocid) : ::Protocol::QUIC::Server(*Ruby_Protocol_QUIC_Dispatcher_get(dispatcher), *Ruby_Protocol_QUIC_Configuration_get(configuration), *Ruby_Protocol_QUIC_TLS_ServerContext_get(tls_context), *Ruby_Protocol_QUIC_Socket_get(socket), *Ruby_Protocol_QUIC_Address_get(remote_address), *Ruby_Protocol_QUIC_PacketHeader_get(packet_header), nullptr), self(self), _dispatcher(dispatcher), _configuration(configuration), _tls_context(tls_context), _socket(socket), _remote_address(remote_address)
+		{
+			// In the body, after the base class has been constructed, so that a constructor that throws never leaves the context counted:
+			StreamOwner::tls_context = Ruby_Protocol_QUIC_TLS_ServerContext_get(tls_context);
+			retain_context(StreamOwner::tls_context);
+		}
+		
 		virtual ~Server() {}
 	
 		::Protocol::QUIC::Stream * create_stream(::Protocol::QUIC::StreamID stream_id) override
