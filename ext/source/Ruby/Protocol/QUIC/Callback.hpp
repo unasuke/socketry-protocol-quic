@@ -32,7 +32,8 @@ namespace Ruby::Protocol::QUIC {
 	{
 		ID method = rb_intern(name);
 
-		if (!rb_respond_to(receiver, method)) return Qnil;
+		// Include private methods, like rb_funcall which used to call the hooks:
+		if (!rb_obj_respond_to(receiver, method, TRUE)) return Qnil;
 
 		Invocation invocation{receiver, method, argc, argv};
 		int state = 0;
